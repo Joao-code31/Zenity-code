@@ -1,0 +1,1636 @@
+
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Text;
+
+enum ZType { Unknown, Int, Float, String, Bool, Null, List }
+
+class ZVar
+{
+    public ZType Type;
+    public object Value;
+
+    public ZVar(ZType type, object value)
+    {
+        Type = type;
+        Value = value;
+    }
+}
+
+class Env
+{
+    public readonly Dictionary<string, ZVar> Values =
+        new Dictionary<string, ZVar>();
+
+    public readonly Env Parent;
+
+    public Env(Env parent = null) { Parent = parent; }
+
+    public bool Exists(string name)
+    {
+        return Values.ContainsKey(name) ||
+               (Parent != null && Parent.Exists(name));
+    }
+
+    public ZVar Find(string name)
+    {
+        if (Values.ContainsKey(name))
+            return Values[name];
+
+        if (Parent != null)
+            return Parent.Find(name);
+
+        throw new Exception("Variável não declarada: " + name);
+    }
+
+    public static ZType TypeOf(object value)
+    {
+        if (value == null) return ZType.Unknown;
+        if (value is string) return ZType.String;
+        if (value is bool) return ZType.Bool;
+        if (value is List<object>) return ZType.List;
+
+        if (IsNumber(value))
+        {
+            double n = Convert.ToDouble(value);
+            return n == Math.Truncate(n) ? ZType.Int : ZType.Float;
+        }
+
+        throw new Exception("Tipo de dado não suportado.");
+    }
+
+    public static bool IsNumber(object value)
+    {
+        return value is int || value is long ||
+               value is double || value is float ||
+               value is decimal;
+    }
+
+    public static double Number(object value)
+    {
+        if (IsNumber(value))
+            return Convert.ToDouble(value, CultureInfo.InvariantCulture);
+
+        if (value is string)
+        {
+            double n;
+
+            if (double.TryParse((string)value,
+                NumberStyles.Float, CultureInfo.InvariantCulture, out n))
+                return n;
+        }
+
+        throw new Exception(
+            "Valor numérico esperado. Recebido: " + Show(value));
+    }
+
+    public static string Show(object value)
+    {
+        if (value == null) return "null";
+
+        if (value is bool)
+            return (bool)value ? "true" : "false";
+
+        if (IsNumber(value))
+            return Number(value).ToString(
+                "G", CultureInfo.InvariantCulture);
+
+        if (value is List<object>)
+        {
+            List<string> parts = new List<string>();
+
+            foreach (object item in (List<object>)value)
+                parts.Add(Show(item));
+
+            return "[" + string.Join(", ", parts) + "]";
+        }
+
+        return Convert.ToString(value, CultureInfo.InvariantCulture);
+    }
+
+    public static object ConvertTo(object value, ZType target)
+    {
+        if (target == ZType.Unknown) return value;
+
+        if (value == null)
+        {
+            if (target == ZType.Null || target == ZType.Unknown)
+                return null;
+
+            throw new Exception(
+                "Não é possível atribuir null ao tipo " + target + ".");
+        }
+
+        switch (target)
+        {
+            case ZType.Int:
+                if (IsNumber(value))
+                {
+                    double number = Number(value);
+
+                    if (number == Math.Truncate(number) &&
+                        number >= int.MinValue &&
+                        number <= int.MaxValue)
+                        return number;
+                }
+
+                if (value is string)
+                {
+                    int integer;
+
+                    if (int.TryParse((string)value,
+                        NumberStyles.Integer,
+                        CultureInfo.InvariantCulture, out integer))
+                        return (double)integer;
+                }
+
+                break;
+
+            case ZType.Float:
+                if (IsNumber(value)) return Number(value);
+
+                if (value is string)
+                {
+                    double number;
+
+                    if (double.TryParse((string)value,
+                        NumberStyles.Float,
+                        CultureInfo.InvariantCulture, out number))
+                        return number;
+                }
+
+                break;
+
+            case ZType.String:
+                return Show(value);
+
+            case ZType.Bool:
+                if (value is bool) return value;
+
+                if (value is string)
+                {
+                    bool boolean;
+
+                    if (bool.TryParse((string)value, out boolean))
+                        return boolean;
+                }
+
+                break;
+
+            case ZType.List:
+                if (value is List<object>) return value;
+                break;
+
+            case ZType.Null:
+                if (value == null) return null;
+                break;
+        }
+
+        throw new Exception(
+            "Conversão incompatível: não é possível converter " +
+            Show(value) + " para " + target + ".");
+    }
+
+    public void Declare(string name, ZType type, object value)
+    {
+        if (Values.ContainsKey(name))
+            throw new Exception(
+                "Variável já declarada neste escopo: " + name);
+
+        Values[name] = new ZVar(type, ConvertTo(value, type));
+    }
+
+    public void Let(string name, object value)
+    {
+        if (Values.ContainsKey(name))
+            throw new Exception(
+                "Variável já declarada neste escopo: " + name);
+
+        Values[name] = new ZVar(TypeOf(value), value);
+    }
+
+    public void Assign(string name, object value)
+    {
+        if (Values.ContainsKey(name))
+        {
+            ZVar variable = Values[name];
+
+            if (variable.Type == ZType.Unknown)
+            {
+                if (value != null)
+                {
+                    variable.Type = TypeOf(value);
+                    variable.Value = value;
+                }
+
+                return;
+            }
+
+            if (variable.Type == ZType.Null)
+            {
+                if (value != null)
+                    throw new Exception(
+                        "Uma variável do tipo Null só aceita null.");
+
+                variable.Value = null;
+                return;
+            }
+
+            variable.Value = ConvertTo(value, variable.Type);
+            return;
+        }
+
+        if (Parent != null && Parent.Exists(name))
+        {
+            Parent.Assign(name, value);
+            return;
+        }
+
+        throw new Exception(
+            "Variável não declarada: " + name +
+            ". Use let ou declare um tipo antes.");
+    }
+}
+
+class Token
+{
+    public string Type;
+    public string Text;
+
+    public Token(string type, string text)
+    {
+        Type = type;
+        Text = text;
+    }
+}
+
+class ExpressionParser
+{
+    readonly List<Token> tokens = new List<Token>();
+    readonly Env env;
+    readonly Func<string, List<object>, object> call;
+    int pos;
+
+    public ExpressionParser(
+        string source,
+        Env environment,
+        Func<string, List<object>, object> functionCall)
+    {
+        env = environment;
+        call = functionCall;
+        Tokenize(source);
+    }
+
+    void Tokenize(string s)
+    {
+        int i = 0;
+
+        while (i < s.Length)
+        {
+            char c = s[i];
+
+            if (char.IsWhiteSpace(c))
+            {
+                i++;
+                continue;
+            }
+
+            if (char.IsDigit(c) ||
+                (c == '.' && i + 1 < s.Length &&
+                 char.IsDigit(s[i + 1])))
+            {
+                int start = i;
+                bool dot = false;
+
+                while (i < s.Length &&
+                       (char.IsDigit(s[i]) || s[i] == '.'))
+                {
+                    if (s[i] == '.')
+                    {
+                        if (dot)
+                            throw new Exception(
+                                "Número inválido: há mais de um ponto decimal.");
+
+                        dot = true;
+                    }
+
+                    i++;
+                }
+
+                string number = s.Substring(start, i - start);
+                double check;
+
+                if (!double.TryParse(number,
+                    NumberStyles.Float,
+                    CultureInfo.InvariantCulture, out check))
+                    throw new Exception("Número inválido: " + number);
+
+                tokens.Add(new Token("number", number));
+                continue;
+            }
+
+            if (char.IsLetter(c) || c == '_')
+            {
+                int start = i++;
+
+                while (i < s.Length &&
+                    (char.IsLetterOrDigit(s[i]) || s[i] == '_'))
+                    i++;
+
+                tokens.Add(new Token(
+                    "name", s.Substring(start, i - start)));
+                continue;
+            }
+
+            if (c == '"')
+            {
+                i++;
+                StringBuilder value = new StringBuilder();
+                bool closed = false;
+
+                while (i < s.Length)
+                {
+                    char ch = s[i++];
+
+                    if (ch == '"')
+                    {
+                        closed = true;
+                        break;
+                    }
+
+                    if (ch == '\\')
+                    {
+                        if (i >= s.Length)
+                            throw new Exception(
+                                "Sequência de escape incompleta.");
+
+                        char next = s[i++];
+
+                        if (next == 'n') value.Append('\n');
+                        else if (next == 't') value.Append('\t');
+                        else if (next == '"') value.Append('"');
+                        else if (next == '\\') value.Append('\\');
+                        else throw new Exception(
+                            "Sequência de escape inválida: \\" + next);
+                    }
+                    else
+                    {
+                        value.Append(ch);
+                    }
+                }
+
+                if (!closed)
+                    throw new Exception(
+                        "Texto sem aspas finais. Use aspas duplas.");
+
+                tokens.Add(new Token("string", value.ToString()));
+                continue;
+            }
+
+            if (i + 1 < s.Length)
+            {
+                string two = s.Substring(i, 2);
+
+                if (two == "==" || two == "!=" ||
+                    two == ">=" || two == "<=" ||
+                    two == "&&" || two == "||")
+                {
+                    tokens.Add(new Token("op", two));
+                    i += 2;
+                    continue;
+                }
+            }
+
+            if ("+-*/%><!(),[]".IndexOf(c) >= 0)
+            {
+                tokens.Add(new Token("op", c.ToString()));
+                i++;
+                continue;
+            }
+
+            throw new Exception(
+                "Símbolo inválido na expressão: " + c);
+        }
+
+        tokens.Add(new Token("end", ""));
+    }
+
+    Token Current { get { return tokens[pos]; } }
+
+    bool Match(string value)
+    {
+        if (Current.Text == value)
+        {
+            pos++;
+            return true;
+        }
+
+        return false;
+    }
+
+    public object Parse()
+    {
+        object result = Or();
+
+        if (Current.Type != "end")
+            throw new Exception(
+                "Expressão inválida perto de: " + Current.Text);
+
+        return result;
+    }
+
+    object Or()
+    {
+        object left = And();
+
+        while (Match("||"))
+        {
+            object right = And();
+            left = ToBool(left) || ToBool(right);
+        }
+
+        return left;
+    }
+
+    object And()
+    {
+        object left = Equality();
+
+        while (Match("&&"))
+        {
+            object right = Equality();
+            left = ToBool(left) && ToBool(right);
+        }
+
+        return left;
+    }
+
+    object Equality()
+    {
+        object left = Compare();
+
+        while (Current.Text == "==" || Current.Text == "!=")
+        {
+            string op = Current.Text;
+            pos++;
+
+            object right = Compare();
+            bool equal;
+
+            if (left == null || right == null)
+                equal = left == null && right == null;
+            else if (left is string && right is string)
+                equal = (string)left == (string)right;
+            else if (left is bool && right is bool)
+                equal = (bool)left == (bool)right;
+            else if (Env.IsNumber(left) && Env.IsNumber(right))
+                equal = Env.Number(left) == Env.Number(right);
+            else
+                equal = false;
+
+            left = op == "==" ? equal : !equal;
+        }
+
+        return left;
+    }
+
+    object Compare()
+    {
+        object left = Term();
+
+        while (Current.Text == ">" || Current.Text == "<" ||
+               Current.Text == ">=" || Current.Text == "<=")
+        {
+            string op = Current.Text;
+            pos++;
+
+            object right = Term();
+            int cmp;
+
+            if (left is string && right is string)
+                cmp = string.CompareOrdinal(
+                    (string)left, (string)right);
+            else
+                cmp = Env.Number(left).CompareTo(Env.Number(right));
+
+            left = op == ">" ? cmp > 0 :
+                   op == "<" ? cmp < 0 :
+                   op == ">=" ? cmp >= 0 : cmp <= 0;
+        }
+
+        return left;
+    }
+
+    object Term()
+    {
+        object left = Factor();
+
+        while (Current.Text == "+" || Current.Text == "-")
+        {
+            string op = Current.Text;
+            pos++;
+
+            object right = Factor();
+
+            if (op == "+" &&
+                (left is string || right is string))
+            {
+                left = Env.Show(left) + Env.Show(right);
+            }
+            else
+            {
+                double a = Env.Number(left);
+                double b = Env.Number(right);
+
+                left = op == "+"
+                    ? (object)(a + b)
+                    : (object)(a - b);
+            }
+        }
+
+        return left;
+    }
+
+    object Factor()
+    {
+        object left = Unary();
+
+        while (Current.Text == "*" ||
+               Current.Text == "/" ||
+               Current.Text == "%")
+        {
+            string op = Current.Text;
+            pos++;
+
+            double a = Env.Number(left);
+            double b = Env.Number(Unary());
+
+            if ((op == "/" || op == "%") && b == 0)
+                throw new Exception(
+                    "Divisão por zero. O divisor não pode ser 0.");
+
+            left = op == "*" ? (object)(a * b) :
+                   op == "/" ? (object)(a / b) :
+                               (object)(a % b);
+        }
+
+        return left;
+    }
+
+    object Unary()
+    {
+        if (Match("-")) return -Env.Number(Unary());
+        if (Match("+")) return Env.Number(Unary());
+        if (Match("!")) return !ToBool(Unary());
+
+        return Postfix();
+    }
+
+    object Postfix()
+    {
+        object value = Primary();
+
+        while (Match("["))
+        {
+            double rawIndex = Env.Number(Or());
+
+            if (rawIndex != Math.Truncate(rawIndex))
+                throw new Exception(
+                    "O índice da lista precisa ser um número inteiro.");
+
+            int index = Convert.ToInt32(rawIndex);
+
+            if (!Match("]"))
+                throw new Exception(
+                    "Faltou fechar o índice com ].");
+
+            if (!(value is List<object>))
+                throw new Exception(
+                    "Só é possível acessar índices de uma lista.");
+
+            List<object> list = (List<object>)value;
+
+            if (index < 0 || index >= list.Count)
+                throw new Exception(
+                    "Índice fora da lista: " + index);
+
+            value = list[index];
+        }
+
+        return value;
+    }
+
+    object Primary()
+    {
+        Token t = Current;
+
+        if (t.Type == "number")
+        {
+            pos++;
+            return double.Parse(
+                t.Text, CultureInfo.InvariantCulture);
+        }
+
+        if (t.Type == "string")
+        {
+            pos++;
+            return t.Text;
+        }
+
+        if (t.Type == "name")
+        {
+            pos++;
+
+            if (t.Text == "true") return true;
+            if (t.Text == "false") return false;
+            if (t.Text == "null") return null;
+
+            if (Match("("))
+            {
+                List<object> args = new List<object>();
+
+                if (!Match(")"))
+                {
+                    do
+                    {
+                        args.Add(Or());
+                    }
+                    while (Match(","));
+
+                    if (!Match(")"))
+                        throw new Exception(
+                            "Faltou fechar a chamada da função com ).");
+                }
+
+                return call(t.Text, args);
+            }
+
+            return env.Find(t.Text).Value;
+        }
+
+        if (Match("["))
+        {
+            List<object> list = new List<object>();
+
+            if (!Match("]"))
+            {
+                do
+                {
+                    list.Add(Or());
+                }
+                while (Match(","));
+
+                if (!Match("]"))
+                    throw new Exception(
+                        "Faltou fechar a lista com ].");
+            }
+
+            return list;
+        }
+
+        if (Match("("))
+        {
+            object result = Or();
+
+            if (!Match(")"))
+                throw new Exception(
+                    "Faltou fechar os parênteses com ).");
+
+            return result;
+        }
+
+        throw new Exception(
+            "Era esperado um valor, mas apareceu: " +
+            (t.Text == "" ? "fim da expressão" : t.Text));
+    }
+
+    static bool ToBool(object value)
+    {
+        if (value is bool) return (bool)value;
+
+        throw new Exception(
+            "A condição precisa resultar em true ou false.");
+    }
+}
+
+class ZFunction
+{
+    public List<string> Parameters;
+    public List<string> Body;
+
+    public ZFunction(List<string> parameters, List<string> body)
+    {
+        Parameters = parameters;
+        Body = body;
+    }
+}
+
+class ReturnSignal : Exception
+{
+    public object Value;
+
+    public ReturnSignal(object value)
+    {
+        Value = value;
+    }
+}
+
+class BreakSignal : Exception { }
+class ContinueSignal : Exception { }
+
+class Zenity
+{
+    static readonly Env globals = new Env();
+
+    static readonly Dictionary<string, ZFunction> functions =
+        new Dictionary<string, ZFunction>();
+
+    static int callDepth = 0;
+    static int currentLine = 1;
+
+    static void Main()
+    {
+        Console.WriteLine("Zenity 0.3 - Sistema de erros");
+        Console.WriteLine("Simples. Poderosa.");
+        Console.WriteLine("Digite exit para sair.");
+
+        List<string> buffer = new List<string>();
+        int depth = 0;
+
+        while (true)
+        {
+            Console.Write(buffer.Count == 0
+                ? "zenity> " : "......> ");
+
+            string line = Console.ReadLine();
+
+            if (line == null) break;
+
+            if (buffer.Count == 0 && line.Trim() == "exit")
+                break;
+
+            buffer.Add(line);
+            string cmd = Clean(line);
+
+            if (OpensBlock(cmd))
+                depth++;
+            else if (cmd == "end")
+                depth--;
+
+            if (depth <= 0)
+            {
+                try
+                {
+                    Run(buffer, globals);
+                }
+                catch (Exception ex)
+                {
+                    ShowError(ex);
+                }
+
+                buffer.Clear();
+                depth = 0;
+            }
+        }
+
+        if (buffer.Count > 0)
+        {
+            Console.WriteLine("Erro Zenity:");
+            Console.WriteLine("Bloco incompleto: faltou end.");
+        }
+    }
+
+    static void ShowError(Exception ex)
+    {
+        Console.WriteLine();
+        Console.WriteLine("Erro Zenity na linha " + currentLine + ":");
+        Console.WriteLine(ex.Message);
+
+        string message = ex.Message;
+        string hint = "";
+
+        if (message.Contains("Variável não declarada") ||
+            message.Contains("Variável não encontrada"))
+        {
+            hint = "Declare a variável antes de utilizá-la.";
+        }
+        else if (message.Contains("Divisão por zero"))
+        {
+            hint = "Confira o divisor da operação.";
+        }
+        else if (message.Contains("Símbolo inválido"))
+        {
+            hint = "Confira os símbolos usados na expressão.";
+        }
+        else if (message.Contains("aspas"))
+        {
+            hint = "Confira se todos os textos têm aspas duplas.";
+        }
+        else if (message.Contains("Faltou fechar") ||
+                 message.Contains("Bloco sem end"))
+        {
+            hint = "Confira os parênteses, colchetes e blocos end.";
+        }
+        else if (message.Contains("Conversão incompatível") ||
+                 message.Contains("atribuir null"))
+        {
+            hint = "Confira o tipo da variável e o valor atribuído.";
+        }
+        else if (message.Contains("true ou false") ||
+                 message.Contains("if exige") ||
+                 message.Contains("while exige"))
+        {
+            hint = "Use uma condição que resulte em true ou false.";
+        }
+        else if (message.Contains("Índice fora"))
+        {
+            hint = "Use um índice entre 0 e o tamanho da lista menos 1.";
+        }
+        else if (message.Contains("Função não encontrada"))
+        {
+            hint = "Confira o nome da função e se ela foi declarada.";
+        }
+        else if (message.Contains("espera") &&
+                 message.Contains("argumento"))
+        {
+            hint = "Confira quantos argumentos a função exige.";
+        }
+        else if (message.Contains("Variável já declarada"))
+        {
+            hint = "Use outro nome ou atribua um novo valor à variável.";
+        }
+        else if (message.Contains("Nome inválido"))
+        {
+            hint = "Use letras, números e _, sem começar com número.";
+        }
+        else if (message.Contains("while") &&
+                 message.Contains("10000"))
+        {
+            hint = "Confira se a condição do while pode ficar falsa.";
+        }
+        else if (message.Contains("loop exige"))
+        {
+            hint = "Use um inteiro entre 0 e 10000.";
+        }
+        else if (message.Contains("return fora"))
+        {
+            hint = "Use return dentro de uma função.";
+        }
+        else if (message.Contains("Comando desconhecido"))
+        {
+            hint = "Confira a escrita do comando.";
+        }
+        else if (message.Contains("Condição"))
+        {
+            hint = "Confira a condição lógica.";
+        }
+        else if (message.Contains("Esperado") ||
+                 message.Contains("esperado"))
+        {
+            hint = "Confira os valores e operadores da expressão.";
+        }
+
+        if (hint != "")
+            Console.WriteLine("Dica: " + hint);
+
+        Console.WriteLine();
+    }
+
+    static string Clean(string line)
+    {
+        bool quoted = false;
+        bool escaped = false;
+
+        for (int i = 0; i < line.Length; i++)
+        {
+            char c = line[i];
+
+            if (escaped)
+            {
+                escaped = false;
+                continue;
+            }
+
+            if (quoted && c == '\\')
+            {
+                escaped = true;
+                continue;
+            }
+
+            if (c == '"')
+            {
+                quoted = !quoted;
+                continue;
+            }
+
+            if (c == '#' && !quoted)
+                return line.Substring(0, i).Trim();
+        }
+
+        return line.Trim();
+    }
+
+    static bool OpensBlock(string line)
+    {
+        return line == "ask" ||
+               line.StartsWith("if ") ||
+               line.StartsWith("while ") ||
+               line.StartsWith("loop ") ||
+               line.StartsWith("function ");
+    }
+
+    static bool ValidName(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name) ||
+            !(char.IsLetter(name[0]) || name[0] == '_'))
+            return false;
+
+        foreach (char c in name)
+        {
+            if (!(char.IsLetterOrDigit(c) || c == '_'))
+                return false;
+        }
+
+        return true;
+    }
+
+    static object Eval(string expression, Env env)
+    {
+        return new ExpressionParser(
+            expression,
+            env,
+            (name, args) => Call(name, args)).Parse();
+    }
+
+    static ZType ParseType(string name)
+    {
+        switch (name)
+        {
+            case "Int": return ZType.Int;
+            case "Float": return ZType.Float;
+            case "String": return ZType.String;
+            case "Bool": return ZType.Bool;
+            case "Null": return ZType.Null;
+            case "List": return ZType.List;
+            default:
+                throw new Exception("Tipo desconhecido: " + name);
+        }
+    }
+
+    static int FindAssignment(string text)
+    {
+        bool quoted = false;
+        bool escaped = false;
+        int parentheses = 0;
+        int brackets = 0;
+
+        for (int i = 0; i < text.Length; i++)
+        {
+            char c = text[i];
+
+            if (escaped)
+            {
+                escaped = false;
+                continue;
+            }
+
+            if (quoted && c == '\\')
+            {
+                escaped = true;
+                continue;
+            }
+
+            if (c == '"')
+            {
+                quoted = !quoted;
+                continue;
+            }
+
+            if (quoted) continue;
+
+            if (c == '(') parentheses++;
+            else if (c == ')') parentheses--;
+            else if (c == '[') brackets++;
+            else if (c == ']') brackets--;
+
+            if (c == '=' && parentheses == 0 && brackets == 0)
+            {
+                char before = i > 0 ? text[i - 1] : '\0';
+                char after = i + 1 < text.Length
+                    ? text[i + 1] : '\0';
+
+                if (before != '=' && before != '!' &&
+                    before != '>' && before != '<' &&
+                    after != '=')
+                    return i;
+            }
+        }
+
+        return -1;
+    }
+
+    static int FindEnd(List<string> lines, int start)
+    {
+        int depth = 0;
+
+        for (int i = start; i < lines.Count; i++)
+        {
+            string s = Clean(lines[i]);
+
+            if (OpensBlock(s))
+                depth++;
+
+            if (s == "end")
+            {
+                depth--;
+
+                if (depth == 0)
+                    return i;
+            }
+        }
+
+        throw new Exception(
+            "Bloco sem end. Feche o bloco com end.");
+    }
+
+    static int FindElse(List<string> lines, int start, int end)
+    {
+        int depth = 0;
+
+        for (int i = start + 1; i < end; i++)
+        {
+            string s = Clean(lines[i]);
+
+            if (OpensBlock(s)) depth++;
+            if (s == "end") depth--;
+
+            if (s == "else" && depth == 0)
+                return i;
+        }
+
+        return -1;
+    }
+
+    static void Run(List<string> lines, Env env)
+    {
+        for (int i = 0; i < lines.Count; i++)
+        {
+            currentLine = i + 1;
+
+            string line = Clean(lines[i]);
+
+            if (line == "" || line == "end" || line == "else")
+                continue;
+
+            if (line == "ask")
+            {
+                int end = FindEnd(lines, i);
+
+                Ask(lines.GetRange(i + 1, end - i - 1), env);
+
+                i = end;
+                continue;
+            }
+
+            if (line.StartsWith("function "))
+            {
+                int end = FindEnd(lines, i);
+                string signature = line.Substring(9).Trim();
+
+                int open = signature.IndexOf('(');
+                int close = signature.LastIndexOf(')');
+
+                if (open <= 0 || close != signature.Length - 1)
+                    throw new Exception(
+                        "Sintaxe de função inválida. Use function nome(a, b).");
+
+                string name = signature.Substring(0, open).Trim();
+
+                if (!ValidName(name))
+                    throw new Exception("Nome de função inválido: " + name);
+
+                string parameterText = signature.Substring(
+                    open + 1, close - open - 1).Trim();
+
+                List<string> parameters = new List<string>();
+
+                if (parameterText != "")
+                {
+                    foreach (string part in parameterText.Split(','))
+                    {
+                        string p = part.Trim();
+
+                        if (!ValidName(p))
+                            throw new Exception(
+                                "Nome de parâmetro inválido: " + p);
+
+                        if (parameters.Contains(p))
+                            throw new Exception(
+                                "Parâmetro repetido: " + p);
+
+                        parameters.Add(p);
+                    }
+                }
+
+                functions[name] = new ZFunction(
+                    parameters,
+                    lines.GetRange(i + 1, end - i - 1));
+
+                i = end;
+                continue;
+            }
+
+            if (line.StartsWith("if "))
+            {
+                int end = FindEnd(lines, i);
+                int elseAt = FindElse(lines, i, end);
+
+                object condition = Eval(line.Substring(3).Trim(), env);
+
+                if (!(condition is bool))
+                    throw new Exception(
+                        "if exige uma condição true ou false.");
+
+                bool result = (bool)condition;
+
+                int from = result
+                    ? i + 1
+                    : (elseAt >= 0 ? elseAt + 1 : end);
+
+                int to = result && elseAt >= 0 ? elseAt : end;
+
+                Run(lines.GetRange(from, Math.Max(0, to - from)), env);
+
+                i = end;
+                continue;
+            }
+
+            if (line.StartsWith("loop "))
+            {
+                int end = FindEnd(lines, i);
+
+                double raw = Env.Number(
+                    Eval(line.Substring(5).Trim(), env));
+
+                if (raw != Math.Truncate(raw) ||
+                    raw < 0 || raw > 10000)
+                    throw new Exception(
+                        "loop exige um inteiro entre 0 e 10000.");
+
+                List<string> body = lines.GetRange(
+                    i + 1, end - i - 1);
+
+                for (int n = 0; n < (int)raw; n++)
+                {
+                    try
+                    {
+                        Run(body, env);
+                    }
+                    catch (ContinueSignal)
+                    {
+                        continue;
+                    }
+                    catch (BreakSignal)
+                    {
+                        break;
+                    }
+                }
+
+                i = end;
+                continue;
+            }
+
+            if (line.StartsWith("while "))
+            {
+                int end = FindEnd(lines, i);
+
+                List<string> body = lines.GetRange(
+                    i + 1, end - i - 1);
+
+                int safety = 0;
+
+                while (true)
+                {
+                    object condition = Eval(
+                        line.Substring(6).Trim(), env);
+
+                    if (!(condition is bool))
+                        throw new Exception(
+                            "while exige uma condição true ou false.");
+
+                    if (!(bool)condition)
+                        break;
+
+                    if (safety++ >= 10000)
+                        throw new Exception(
+                            "Limite de 10000 repetições atingido.");
+
+                    try
+                    {
+                        Run(body, env);
+                    }
+                    catch (ContinueSignal)
+                    {
+                        continue;
+                    }
+                    catch (BreakSignal)
+                    {
+                        break;
+                    }
+                }
+
+                i = end;
+                continue;
+            }
+
+            if (line == "break")
+                throw new BreakSignal();
+
+            if (line == "continue")
+                throw new ContinueSignal();
+
+            if (line == "return" || line.StartsWith("return "))
+            {
+                if (callDepth == 0)
+                    throw new Exception(
+                        "return não pode ser usado fora de uma função.");
+
+                string expr = line == "return"
+                    ? "" : line.Substring(7).Trim();
+
+                throw new ReturnSignal(
+                    expr == "" ? null : Eval(expr, env));
+            }
+
+            if (line.StartsWith("say "))
+            {
+                Console.WriteLine(
+                    Env.Show(Eval(line.Substring(4).Trim(), env)));
+
+                continue;
+            }
+
+            if (line.StartsWith("let "))
+            {
+                string text = line.Substring(4).Trim();
+                int eq = FindAssignment(text);
+
+                if (eq < 1)
+                    throw new Exception(
+                        "Declaração inválida. Use let nome = valor.");
+
+                string name = text.Substring(0, eq).Trim();
+
+                if (!ValidName(name))
+                    throw new Exception(
+                        "Nome de variável inválido: " + name);
+
+                env.Let(name, Eval(text.Substring(eq + 1).Trim(), env));
+                continue;
+            }
+
+            int space = line.IndexOf(' ');
+
+            if (space > 0)
+            {
+                string first = line.Substring(0, space);
+
+                if (first == "Int" || first == "Float" ||
+                    first == "String" || first == "Bool" ||
+                    first == "Null" || first == "List")
+                {
+                    string text = line.Substring(space + 1).Trim();
+                    int eq = FindAssignment(text);
+
+                    if (eq < 1)
+                        throw new Exception(
+                            "Declaração inválida. Use " +
+                            first + " nome = valor.");
+
+                    string name = text.Substring(0, eq).Trim();
+
+                    if (!ValidName(name))
+                        throw new Exception(
+                            "Nome de variável inválido: " + name);
+
+                    env.Declare(
+                        name,
+                        ParseType(first),
+                        Eval(text.Substring(eq + 1).Trim(), env));
+
+                    continue;
+                }
+            }
+
+            if (line.StartsWith("question "))
+            {
+                string text = line.Substring(9).Trim();
+                int eq = FindAssignment(text);
+
+                if (eq < 1)
+                    throw new Exception(
+                        "Use question nome = \"Sua pergunta\".");
+
+                string name = text.Substring(0, eq).Trim();
+                string prompt = text.Substring(eq + 1).Trim();
+
+                if (!ValidName(name))
+                    throw new Exception(
+                        "Nome de variável inválido em question: " + name);
+
+                Console.WriteLine(Env.Show(Eval(prompt, env)));
+                Console.Write("> ");
+
+                string input = Console.ReadLine() ?? "";
+
+                if (env.Exists(name))
+                    env.Assign(name, input);
+                else
+                    env.Let(name, input);
+
+                continue;
+            }
+
+            int assignment = FindAssignment(line);
+
+            if (assignment > 0)
+            {
+                string name = line.Substring(0, assignment).Trim();
+                string expr = line.Substring(assignment + 1).Trim();
+
+                int bracket = name.IndexOf('[');
+
+                if (bracket > 0 && name.EndsWith("]"))
+                {
+                    string listName = name.Substring(0, bracket).Trim();
+
+                    string indexExpr = name.Substring(
+                        bracket + 1,
+                        name.Length - bracket - 2);
+
+                    object listValue = env.Find(listName).Value;
+
+                    if (!(listValue is List<object>))
+                        throw new Exception(
+                            listName + " não é uma lista.");
+
+                    double rawIndex = Env.Number(Eval(indexExpr, env));
+
+                    if (rawIndex != Math.Truncate(rawIndex))
+                        throw new Exception(
+                            "O índice da lista precisa ser inteiro.");
+
+                    int index = Convert.ToInt32(rawIndex);
+                    List<object> list = (List<object>)listValue;
+
+                    if (index < 0 || index >= list.Count)
+                        throw new Exception(
+                            "Índice fora da lista: " + index);
+
+                    list[index] = Eval(expr, env);
+                }
+                else
+                {
+                    if (!ValidName(name))
+                        throw new Exception(
+                            "Nome de variável inválido: " + name);
+
+                    env.Assign(name, Eval(expr, env));
+                }
+
+                continue;
+            }
+
+            if (line.StartsWith("run "))
+            {
+                string name = line.Substring(4).Trim();
+                Call(name, new List<object>());
+                continue;
+            }
+
+            if (line.Contains("(") && line.EndsWith(")"))
+            {
+                Eval(line, env);
+                continue;
+            }
+
+            throw new Exception(
+                "Comando desconhecido: " + line);
+        }
+    }
+
+    static object Call(string name, List<object> args)
+    {
+        if (name == "length")
+        {
+            if (args.Count != 1)
+                throw new Exception(
+                    "length exige exatamente 1 argumento.");
+
+            if (args[0] is string)
+                return (double)((string)args[0]).Length;
+
+            if (args[0] is List<object>)
+                return (double)((List<object>)args[0]).Count;
+
+            throw new Exception(
+                "length aceita apenas texto ou lista.");
+        }
+
+        if (name == "toString")
+        {
+            if (args.Count != 1)
+                throw new Exception(
+                    "toString exige exatamente 1 argumento.");
+
+            return Env.Show(args[0]);
+        }
+
+        if (name == "toInt")
+        {
+            if (args.Count != 1)
+                throw new Exception(
+                    "toInt exige exatamente 1 argumento.");
+
+            return Env.ConvertTo(args[0], ZType.Int);
+        }
+
+        if (name == "toBool")
+        {
+            if (args.Count != 1)
+                throw new Exception(
+                    "toBool exige exatamente 1 argumento.");
+
+            return Env.ConvertTo(args[0], ZType.Bool);
+        }
+
+        if (name == "push")
+        {
+            if (args.Count != 2 || !(args[0] is List<object>))
+                throw new Exception(
+                    "Sintaxe inválida. Use push(lista, valor).");
+
+            ((List<object>)args[0]).Add(args[1]);
+            return null;
+        }
+
+        if (name == "remove")
+        {
+            if (args.Count != 2 || !(args[0] is List<object>))
+                throw new Exception(
+                    "Sintaxe inválida. Use remove(lista, índice).");
+
+            List<object> list = (List<object>)args[0];
+            double rawIndex = Env.Number(args[1]);
+
+            if (rawIndex != Math.Truncate(rawIndex))
+                throw new Exception(
+                    "O índice para remove precisa ser inteiro.");
+
+            int index = Convert.ToInt32(rawIndex);
+
+            if (index < 0 || index >= list.Count)
+                throw new Exception(
+                    "Índice fora da lista: " + index);
+
+            list.RemoveAt(index);
+            return null;
+        }
+
+        ZFunction function;
+
+        if (!functions.TryGetValue(name, out function))
+            throw new Exception(
+                "Função não encontrada: " + name);
+
+        if (args.Count != function.Parameters.Count)
+            throw new Exception(
+                "A função " + name + " espera " +
+                function.Parameters.Count + " argumento(s), mas recebeu " +
+                args.Count + ".");
+
+        if (callDepth >= 100)
+            throw new Exception(
+                "Limite de chamadas recursivas atingido (100).");
+
+        Env local = new Env(globals);
+
+        for (int i = 0; i < args.Count; i++)
+            local.Let(function.Parameters[i], args[i]);
+
+        callDepth++;
+
+        try
+        {
+            Run(function.Body, local);
+            return null;
+        }
+        catch (ReturnSignal signal)
+        {
+            return signal.Value;
+        }
+        finally
+        {
+            callDepth--;
+        }
+    }
+
+    static bool SameAnswer(object expected, string input)
+    {
+        if (expected == null)
+            return input.Trim() == "null";
+
+        if (expected is string)
+            return (string)expected == input;
+
+        if (expected is bool)
+        {
+            bool actual;
+
+            return bool.TryParse(input, out actual) &&
+                   actual == (bool)expected;
+        }
+
+        double actualNumber;
+
+        return double.TryParse(input,
+            NumberStyles.Float,
+            CultureInfo.InvariantCulture,
+            out actualNumber) &&
+            actualNumber == Env.Number(expected);
+    }
+
+    static void Ask(List<string> body, Env env)
+    {
+        string question = null;
+        string answer = null;
+        string wrong = null;
+        string correct = null;
+        string variableName = null;
+
+        foreach (string original in body)
+        {
+            string line = Clean(original);
+
+            if (line == "") continue;
+
+            if (line.StartsWith("question "))
+            {
+                string text = line.Substring(9).Trim();
+                int eq = FindAssignment(text);
+
+                if (eq < 1)
+                    throw new Exception(
+                        "Use question nome = \"Pergunta\" dentro de ask.");
+
+                variableName = text.Substring(0, eq).Trim();
+                question = text.Substring(eq + 1).Trim();
+
+                if (!ValidName(variableName))
+                    throw new Exception(
+                        "Nome de variável inválido em question.");
+            }
+            else if (line.StartsWith("answer "))
+            {
+                answer = line.Substring(7).Trim();
+            }
+            else if (line.StartsWith("wrong "))
+            {
+                wrong = line.Substring(6).Trim();
+            }
+            else if (line.StartsWith("correct "))
+            {
+                correct = line.Substring(8).Trim();
+            }
+            else
+            {
+                throw new Exception(
+                    "Comando inválido dentro de ask: " + line);
+            }
+        }
+
+        if (question == null || answer == null ||
+            wrong == null || correct == null)
+            throw new Exception(
+                "ask precisa de question, answer, wrong e correct.");
+
+        object prompt = Eval(question, env);
+        object expected = Eval(answer, env);
+
+        Console.WriteLine(Env.Show(prompt));
+        Console.Write("> ");
+
+        string input = Console.ReadLine() ?? "";
+
+        if (env.Exists(variableName))
+            env.Assign(variableName, input);
+        else
+            env.Let(variableName, input);
+
+        string response = SameAnswer(expected, input)
+            ? correct : wrong;
+
+        Console.WriteLine(Env.Show(Eval(response, env)));
+    }
+}
